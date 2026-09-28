@@ -1,0 +1,230 @@
+# Build Face Swap Video (Windows x64 portable zip), test the PACKAGED exe on windows-latest, publish a GitHub Release.
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create / update the GitHub Release with the zip"
+        type: boolean
+        default: false
+      parity:
+        description: "Also run the Python reference pipeline and compare (slow)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.13"
+  GLOG_minloglevel: "2"
+  PYTHONUTF8: "1"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-win.txt
+
+      - name: Runner info
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List
+          Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, AdapterRAM | Format-List
+          [System.Environment]::OSVersion.VersionString
+
+      - name: Install Python deps
+        shell: pwsh
+        run: |
+          python -m pip install -U pip wheel
+          pip install -r requirements-win.txt
+          pip install --no-deps mediapipe==1.0.1
+          python -c "import mediapipe, onnxruntime, cv2, PySide6; print(mediapipe.__version__, onnxruntime.__version__, onnxruntime.get_available_providers(), cv2.__version__, PySide6.__version__)"
+
+      - name: Download LGPL FFmpeg (BtbN win64 lgpl-shared)
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File packaging/download_ffmpeg.ps1
+          Get-ChildItem ffmpeg | Format-Table Name, Length
+
+      - name: Cache AI models
+        uses: actions/cache@v4
+        with:
+          path: .models-cache
+          key: models-v1-${{ hashFiles('fsv/models.py') }}
+
+      - name: Prefetch models (same URLs + SHA-256 as the Android app)
+        shell: pwsh
+        run: |
+          $env:FSV_MODELS = "$PWD\.models-cache"
+          python scripts/prefetch_models.py light
+
+      - name: Fetch test clips (Mixkit, private people, SHA-checked)
+        shell: pwsh
+        run: python scripts/fetch_test_clips.py clips
+
+      - name: PyInstaller (onedir, GUI exe + console exe)
+        shell: pwsh
+        run: |
+          pyinstaller FaceSwapVideo.spec --noconfirm
+          New-Item -ItemType Directory -Force -Path dist/FaceSwapVideo/ffmpeg | Out-Null
+          Copy-Item ffmpeg/* dist/FaceSwapVideo/ffmpeg/ -Force
+          "{0:N1} MB" -f ((Get-ChildItem dist/FaceSwapVideo -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: Selftest - packaged FaceSwapVideo_cli.exe, CPU, real clip + Light enhancer, DirectML smoke
+        shell: pwsh
+        run: |
+          $out = "$PWD\selftest-out\cli"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & dist\FaceSwapVideo\FaceSwapVideo_cli.exe --selftest `
+            --video clips\mixkit_48205.mp4 --photo testdata\faces_e5.jpg `
+            --models "$PWD\.models-cache" --device cpu --enhance gpen256 `
+            --start 1 --length 4 --fps 15 --max-short 720 --out $out --dml-smoke
+          $code = $LASTEXITCODE
+          Get-Content "$out\selftest_report.json"
+          if ($code -ne 0) { throw "selftest failed: $code" }
+
+      - name: Selftest - packaged windowed FaceSwapVideo.exe (sample with audio)
+        shell: pwsh
+        run: |
+          $out = "$PWD\selftest-out\gui_exe"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $p = Start-Process -FilePath dist\FaceSwapVideo\FaceSwapVideo.exe -PassThru -Wait -ArgumentList @(
+            "--selftest", "--video", "`"$PWD\testdata\sample_2s.mp4`"", "--photo", "`"$PWD\testdata\faces_e5.jpg`"",
+            "--models", "`"$PWD\.models-cache`"", "--device", "cpu", "--enhance", "off",
+            "--start", "0", "--length", "2", "--fps", "15", "--max-short", "720", "--out", "`"$out`"")
+          Write-Host "exit code $($p.ExitCode)"
+          Get-Content "$out\selftest_report.json"
+          if ($p.ExitCode -ne 0) { throw "windowed selftest failed" }
+
+      - name: GUI launch smoke (real window on the runner desktop)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force -Path screens-ci | Out-Null
+          $env:FSV_MODELS = "$PWD\.models-cache"
+          $p = Start-Process -FilePath dist\FaceSwapVideo\FaceSwapVideo.exe -PassThru -ArgumentList @(
+            "--models", "`"$PWD\.models-cache`"", "--video", "`"$PWD\clips\mixkit_48205.mp4`"", "--photo", "`"$PWD\testdata\faces_e5.jpg`"")
+          Start-Sleep -Seconds 45
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\screens-ci\desktop_gui_launch.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          $alive = -not $p.HasExited
+          Write-Host "GUI process alive after 45 s: $alive  screen $($b.Width)x$($b.Height)"
+          "alive=$alive screen=$($b.Width)x$($b.Height)" | Out-File selftest-out\gui_launch.txt
+          if ($alive) { Stop-Process -Id $p.Id -Force } else { throw "GUI exited early: $($p.ExitCode)" }
+
+      - name: UI screenshots with the packaged exe (offscreen Qt, 150 %)
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process -FilePath dist\FaceSwapVideo\FaceSwapVideo_cli.exe -PassThru -Wait -NoNewWindow -ArgumentList @(
+            "--screenshots", "`"$PWD\screens-ci`"", "--video", "`"$PWD\clips\mixkit_48205.mp4`"", "--photo", "`"$PWD\testdata\faces_e5.jpg`"",
+            "--models", "`"$PWD\.models-cache`"", "--device", "cpu")
+          Get-ChildItem screens-ci | Format-Table Name, Length
+          if ($p.ExitCode -ne 0) { throw "screenshots failed: $($p.ExitCode)" }
+
+      - name: Parity vs Python reference on Windows (CPU)
+        if: github.event_name != 'workflow_dispatch' || inputs.parity
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path parity | Out-Null
+          # App side: packaged exe, same settings as the reference (<=720p, x16 dims, 15 fps, sequential decode)
+          & dist\FaceSwapVideo\FaceSwapVideo_cli.exe --run clips\mixkit_48205.mp4 testdata\faces_e5.jpg parity\app.mp4 `
+            --models "$PWD\.models-cache" --device cpu --enhance gpen256 --start 0 --length 4 --fps 15 `
+            --max-short 720 --align 16 --sequential --dump parity\app_dump
+          if ($LASTEXITCODE -ne 0) { throw "app run failed" }
+          # Reference side: separate venv (ORT 1.30 like the Android parity suite) + GPL ffmpeg only for its libx264 encode
+          python -m venv refvenv
+          refvenv\Scripts\python -m pip install -q onnxruntime==1.30.0 onnx numpy opencv-python-headless==5.0.0.93 absl-py flatbuffers matplotlib
+          refvenv\Scripts\python -m pip install -q --no-deps mediapipe==1.0.1
+          $u = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
+          Invoke-WebRequest $u -OutFile $env:TEMP\ffgpl.zip -UseBasicParsing
+          Expand-Archive $env:TEMP\ffgpl.zip -DestinationPath $env:TEMP\ffgpl -Force
+          $bin = (Get-ChildItem $env:TEMP\ffgpl -Recurse -Filter ffmpeg.exe | Select-Object -First 1).Directory.FullName
+          $env:PATH = "$bin;$env:PATH"
+          $env:AI_MODELS = "$PWD\.models-cache"
+          refvenv\Scripts\python reference\test\video_pipeline.py clips\mixkit_48205.mp4 testdata\faces_e5.jpg parity\ref.mp4 `
+            --start 0 --end 4 --fps 15 --enhance gpen256 --dump parity\ref_dump
+          if ($LASTEXITCODE -ne 0) { throw "reference run failed" }
+          refvenv\Scripts\python scripts\parity_compare.py parity\ref_dump parity\app_dump windows_mixkit_48205 --json parity\parity_windows.json | Tee-Object parity\parity_windows.txt
+          if ($LASTEXITCODE -ne 0) { throw "parity mismatch" }
+
+      - name: Make portable zip
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File packaging/make_zip.ps1
+          Get-ChildItem dist\*.zip | Format-Table Name, Length
+          Get-Content dist\SHA256SUMS
+
+      - name: Upload build + test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceSwapVideo-win64-tests
+          path: |
+            selftest-out/**
+            screens-ci/**
+            parity/*.txt
+            parity/*.json
+            parity/app.mp4
+            dist/SHA256SUMS
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceSwapVideo-win64-zip
+          path: dist/FaceSwapVideo-*-win64.zip
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $zip = Get-ChildItem dist\FaceSwapVideo-*-win64.zip | Select-Object -First 1
+          $ver = $zip.Name -replace '^FaceSwapVideo-(.+)-win64\.zip$', '$1'
+          $tag = if ("${{ github.ref }}".StartsWith("refs/tags/")) { "${{ github.ref_name }}" } else { "v$ver" }
+          $sha = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          $r = Get-Content selftest-out\cli\selftest_report.json -Raw | ConvertFrom-Json
+          $dml = if ($r.directml) { ($r.directml | ConvertTo-Json -Compress -Depth 6) } else { "n/a" }
+          $lines = @(
+            "Portable build for Windows 10/11 x64 - made for the ASUS ROG Ally X (Radeon 780M, DirectML), works on any DirectX 12 PC with CPU fallback.",
+            "",
+            "| Asset | Size | SHA-256 |",
+            "|---|---|---|",
+            "| $($zip.Name) | $($zip.Length) bytes | $sha |",
+            "",
+            "### First run",
+            "1. Unzip, open the FaceSwapVideo folder, run **FaceSwapVideo.exe**.",
+            "2. **SmartScreen** (not code-signed): click **More info** then **Run anyway**.",
+            "3. Download the AI models when asked: 452 MB required, +76 MB Light, +284 MB HQ enhancer (812 MB total). InsightFace models are for personal, non-commercial use only.",
+            "",
+            "Details, speed estimates and licences: https://github.com/${{ github.repository }}#readme",
+            "",
+            "### CI (windows-latest, packaged exe)",
+            "- Selftest (CPU, Mixkit clip 4 s, Light enhancer): ok=$($r.ok)",
+            "- DirectML smoke: $dml"
+          )
+          $lines -join "`n" | Out-File -Encoding utf8 notes.md
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag $zip.FullName dist\SHA256SUMS --title "Face Swap Video for Windows $tag" --notes-file notes.md
+          } else {
+            gh release upload $tag $zip.FullName dist\SHA256SUMS --clobber
+            gh release edit $tag --notes-file notes.md
+          }

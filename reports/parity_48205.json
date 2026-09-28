@@ -1,0 +1,64 @@
+{
+ "label": "mixkit_48205",
+ "checks": {
+  "output size": true,
+  "frame selection": true,
+  "detections per frame": true,
+  "detected landmarks": true,
+  "track ids / frames": true,
+  "raw track points": true,
+  "smooth track points": true,
+  "pairing": true,
+  "frame 0": true,
+  "frame 1": true,
+  "frame 2": true,
+  "frame 60": true,
+  "frame 119": true
+ },
+ "frames": [
+  {
+   "k": 0,
+   "decoded_max_diff": 0,
+   "psnr_frame": 89.66942351736483,
+   "psnr_swapped_region": 78.75429697718391,
+   "max_diff": 1,
+   "changed_px": 74650
+  },
+  {
+   "k": 1,
+   "decoded_max_diff": 0,
+   "psnr_frame": 88.91132101774565,
+   "psnr_swapped_region": 78.01363943359962,
+   "max_diff": 1,
+   "changed_px": 74626
+  },
+  {
+   "k": 2,
+   "decoded_max_diff": 0,
+   "psnr_frame": 89.22305621751104,
+   "psnr_swapped_region": 78.33003782170661,
+   "max_diff": 1,
+   "changed_px": 74682
+  },
+  {
+   "k": 60,
+   "decoded_max_diff": 0,
+   "psnr_frame": 89.94672693681635,
+   "psnr_swapped_region": 79.02610767562425,
+   "max_diff": 1,
+   "changed_px": 74146
+  },
+  {
+   "k": 119,
+   "decoded_max_diff": 0,
+   "psnr_frame": 88.87388160640691,
+   "psnr_swapped_region": 77.81412318744142,
+   "max_diff": 1,
+   "changed_px": 71895
+  }
+ ],
+ "det_max_px": 0.0,
+ "raw_max_px": 0.0,
+ "smooth_max_px": 0.0,
+ "ok": true
+}

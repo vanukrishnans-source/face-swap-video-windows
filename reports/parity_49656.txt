@@ -1,0 +1,15 @@
+== mixkit_49656
+  output size                        OK 1280x720
+  frame selection                    OK 114 frames
+  detections per frame               OK 
+  detected landmarks                 OK max |d| = 0.00e+00 px
+  track ids / frames                 OK ref [109, 45] app [109, 45]
+  raw track points                   OK max |d| = 0.00e+00 px
+  smooth track points                OK max |d| = 0.00e+00 px
+  pairing                            OK ref [1, 0]@61 app [1, 0]@61
+  frame 0                            OK decoded input max|d|=0  output PSNR 91.7 dB (swapped region 84.2 dB, 163459 px) max|d|=1
+  frame 1                            OK decoded input max|d|=0  output PSNR 91.5 dB (swapped region 84.0 dB, 164027 px) max|d|=1
+  frame 2                            OK decoded input max|d|=0  output PSNR 91.7 dB (swapped region 84.2 dB, 164549 px) max|d|=1
+  frame 57                           OK decoded input max|d|=0  output PSNR 92.8 dB (swapped region 85.3 dB, 164353 px) max|d|=1
+  frame 113                          OK decoded input max|d|=0  output PSNR 90.3 dB (swapped region 85.0 dB, 272804 px) max|d|=1
+  RESULT: ALL PARITY CHECKS PASSED
