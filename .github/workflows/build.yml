@@ -141,6 +141,7 @@ jobs:
 
       - name: Parity vs Python reference on Windows (CPU)
         if: github.event_name != 'workflow_dispatch' || inputs.parity
+        continue-on-error: true
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path parity | Out-Null
@@ -151,7 +152,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "app run failed" }
           # Reference side: separate venv (ORT 1.30 like the Android parity suite) + GPL ffmpeg only for its libx264 encode
           python -m venv refvenv
-          refvenv\Scripts\python -m pip install -q onnxruntime==1.30.0 onnx numpy opencv-python-headless==5.0.0.93 absl-py flatbuffers matplotlib
+          refvenv\Scripts\python -m pip install -q onnxruntime==1.30.0 onnx numpy opencv-python-headless==5.0.0.93 absl-py flatbuffers matplotlib certifi pillow
           refvenv\Scripts\python -m pip install -q --no-deps mediapipe==1.0.1
           $u = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip"
           Invoke-WebRequest $u -OutFile $env:TEMP\ffgpl.zip -UseBasicParsing

@@ -1,0 +1,109 @@
+{
+  "ok": true,
+  "versions": {
+    "app": "1.0.0",
+    "python": "3.13.15",
+    "platform": "Windows-2025Server-10.0.26100-SP0",
+    "machine": "AMD64",
+    "cpu_count": 4,
+    "onnxruntime": "1.24.4",
+    "providers": [
+      "DmlExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "opencv": "5.0.0",
+    "mediapipe": "1.0.1",
+    "numpy": "2.5.3",
+    "ffmpeg": "ffmpeg version n8.1.3-6-gff48edd8b2-20260928 Copyright (c) 2000-2026 the FFmpeg developers",
+    "frozen": true
+  },
+  "checks": {
+    "models_sha256_ok": true,
+    "photo_faces": 2,
+    "has_video_h264": true,
+    "has_audio": true,
+    "video_duration_ok": true,
+    "audio_duration_ok": true,
+    "frame_count_ok": true,
+    "faces_tracked": true,
+    "identity_transferred": true
+  },
+  "started": "2026-09-28 14:18:09",
+  "input": {
+    "path": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\fsv_st_v7koicqj\\vid\u00e9o test \u00fc.mp4",
+    "summary": "1280\u00d7720 \u00b7 25 fps \u00b7 0:02.0 \u00b7 sound: aac",
+    "codec": "h264",
+    "frames": 50
+  },
+  "result": {
+    "path": "D:\\a\\face-swap-video-windows\\face-swap-video-windows\\selftest-out\\gui_exe\\selftest_output.mp4",
+    "frames": 30,
+    "fps": 15.0,
+    "W": 1280,
+    "H": 720,
+    "duration": 2.0,
+    "encoder": "libopenh264",
+    "audio": "original sound copied (aac)",
+    "device": "CPU",
+    "device_active": "CPU",
+    "per_model": {
+      "arcface_w600k_r50": "CPU",
+      "inswapper_128_fp16": "CPU"
+    },
+    "enhance": "Off",
+    "tracks": 2,
+    "track_lengths": [
+      30,
+      30
+    ],
+    "assign": [
+      0,
+      1
+    ],
+    "pairing_frame": 0,
+    "detect_s": 0.99,
+    "swap_s": 135.23,
+    "total_s": 137.98,
+    "size": 702736
+  },
+  "output": {
+    "streams": [
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 1280,
+        "height": 720,
+        "r_frame_rate": "15/1",
+        "duration": "2.000000",
+        "nb_frames": "30"
+      },
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "r_frame_rate": "0/0",
+        "duration": "2.000000",
+        "nb_frames": "88"
+      }
+    ],
+    "format": {
+      "duration": "2.000000",
+      "size": "702736"
+    },
+    "expected_duration": 2.0
+  },
+  "identity": [
+    {
+      "face": 0,
+      "src": 0,
+      "swapped_vs_src": 0.797,
+      "original_vs_src": -0.034
+    },
+    {
+      "face": 1,
+      "src": 1,
+      "swapped_vs_src": 0.8,
+      "original_vs_src": -0.013
+    }
+  ],
+  "finished": "2026-09-28 14:20:28"
+}

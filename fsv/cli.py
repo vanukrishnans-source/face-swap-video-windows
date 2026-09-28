@@ -173,30 +173,46 @@ def selftest(args):
 
 
 def dml_smoke(store, frame, dets, assign, photo):
-    """Try the DirectML EP: which provider ran, timings, and output difference vs CPU on one frame."""
+    """Try the DirectML EP: which provider ran, timings, and output difference vs CPU on one frame.
+    Hosted CI runners have no GPU; DirectML may bind to WARP (software) or refuse the session — both are reported."""
     from . import core
     from .engine import Engine
-    out = {}
+    import onnxruntime as ort
+    out = {"available_providers": ort.get_available_providers(), "note": "Hosted runners have no discrete/iGPU; DML may use WARP or fall back."}
     try:
         cpu = Engine(store, "cpu"); cpu.prepare(None)
-        dml = Engine(store, "dml")
-        t0 = time.perf_counter(); dml.prepare(None); out["dml_init_s"] = round(time.perf_counter() - t0, 2)
-        out["device"] = dml.info.label(); out["per_model"] = dml.info.per_model; out["adapters"] = dml.info.adapter
-        out["bench_dml"] = dml.benchmark(modes=("off",)); out["bench_cpu"] = cpu.benchmark(modes=("off",))
-
-        def run(eng):
-            lat = {}
-            for a in set(x for x in assign if x >= 0):
-                lat[a] = core.latent_for(eng, core.embedding(eng, photo.img, core.kps5(photo.faces[a][:468])))
-            faces = [(dets[i].astype(np.float32), lat[a]) for i, a in enumerate(assign) if a >= 0]
-            return core.process_frame(eng, frame, faces, None)
-        a, b = run(cpu), run(dml)
-        mse = float(np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2))
-        out["frame_psnr_dml_vs_cpu_db"] = round(10 * np.log10(255 ** 2 / mse), 2) if mse > 0 else "inf"
-        out["max_abs_diff"] = int(np.abs(a.astype(int) - b.astype(int)).max())
-        out["ok"] = True
+        # Prefer forced DML so we see the real failure; fall back to auto and record what it chose.
+        try:
+            dml = Engine(store, "dml")
+            t0 = time.perf_counter(); dml.prepare(None); out["dml_init_s"] = round(time.perf_counter() - t0, 2)
+            out["mode"] = "forced_dml"
+        except Exception as e:  # noqa: BLE001
+            out["forced_dml_error"] = f"{type(e).__name__}: {e}"
+            dml = Engine(store, "auto")
+            t0 = time.perf_counter(); dml.prepare(None); out["dml_init_s"] = round(time.perf_counter() - t0, 2)
+            out["mode"] = "auto_after_forced_failed"
+        out["device"] = dml.info.label(); out["per_model"] = dict(dml.info.per_model)
+        out["adapters"] = dml.info.adapter; out["fallback_reason"] = dml.info.fallback_reason
+        out["active"] = dml.info.active
+        if dml.info.active == "DirectML":
+            out["bench_dml"] = dml.benchmark(modes=("off",)); out["bench_cpu"] = cpu.benchmark(modes=("off",))
+            def run(eng):
+                lat = {}
+                for a in set(x for x in assign if x >= 0):
+                    lat[a] = core.latent_for(eng, core.embedding(eng, photo.img, core.kps5(photo.faces[a][:468])))
+                faces = [(dets[i].astype(np.float32), lat[a]) for i, a in enumerate(assign) if a >= 0]
+                return core.process_frame(eng, frame, faces, None)
+            a, b = run(cpu), run(dml)
+            mse = float(np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2))
+            out["frame_psnr_dml_vs_cpu_db"] = round(10 * np.log10(255 ** 2 / mse), 2) if mse > 0 else "inf"
+            out["max_abs_diff"] = int(np.abs(a.astype(int) - b.astype(int)).max())
+            out["ok"] = True
+        else:
+            out["ok"] = False
+            out["error"] = out.get("forced_dml_error") or dml.info.fallback_reason or "DirectML not active"
     except Exception as e:  # noqa: BLE001
         out["ok"] = False; out["error"] = f"{type(e).__name__}: {e}"
+        out["traceback"] = traceback.format_exc()
     log.info("directml smoke %s", json.dumps(out, default=str))
     return out
 

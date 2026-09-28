@@ -162,8 +162,9 @@ class Engine:
             try:
                 s = self.ort.InferenceSession(path, self._options(True),
                                               providers=[("DmlExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"])
-                if s.get_providers()[0] != "DmlExecutionProvider":
-                    raise RuntimeError("DirectML provider not used")
+                used = s.get_providers()
+                if not used or used[0] != "DmlExecutionProvider":
+                    raise RuntimeError(f"DirectML provider not used (got {used})")
                 self._warm(s, name)
                 self.info.per_model[name] = "DirectML"
                 return s

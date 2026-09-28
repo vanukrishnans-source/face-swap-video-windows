@@ -1,0 +1,1 @@
+alive=True screen=1024x768
