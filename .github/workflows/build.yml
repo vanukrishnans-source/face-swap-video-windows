@@ -135,7 +135,7 @@ jobs:
           $env:QT_QPA_PLATFORM = "offscreen"
           $p = Start-Process -FilePath dist\FaceSwapVideo\FaceSwapVideo_cli.exe -PassThru -Wait -NoNewWindow -ArgumentList @(
             "--screenshots", "`"$PWD\screens-ci`"", "--video", "`"$PWD\clips\mixkit_48205.mp4`"", "--photo", "`"$PWD\testdata\faces_e5.jpg`"",
-            "--models", "`"$PWD\.models-cache`"", "--device", "cpu")
+            "--models", "`"$PWD\.models-cache`"", "--device", "cpu", "--length", "2")
           Get-ChildItem screens-ci | Format-Table Name, Length
           if ($p.ExitCode -ne 0) { throw "screenshots failed: $($p.ExitCode)" }
 

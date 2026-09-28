@@ -32,14 +32,8 @@ def landmarker_path() -> str:
 
 
 def _mediapipe_import_shim():
-    """mediapipe 1.0.x imports matplotlib.pyplot (drawing helpers only) at package import. The packaged app
-    doesn't ship matplotlib (~60 MB), so provide an empty stand-in when it's missing."""
-    try:
-        import matplotlib.pyplot  # noqa: F401
-    except Exception:  # noqa: BLE001
-        import types
-        mpl = types.ModuleType("matplotlib"); plt = types.ModuleType("matplotlib.pyplot")
-        mpl.pyplot = plt; sys.modules["matplotlib"] = mpl; sys.modules["matplotlib.pyplot"] = plt
+    from . import _install_matplotlib_stub
+    _install_matplotlib_stub()
 
 
 def _landmarker():
