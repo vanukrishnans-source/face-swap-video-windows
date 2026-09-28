@@ -28,9 +28,9 @@
     "faces_tracked": true,
     "identity_transferred": true
   },
-  "started": "2026-09-28 14:18:09",
+  "started": "2026-09-28 14:44:56",
   "input": {
-    "path": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\fsv_st_v7koicqj\\vid\u00e9o test \u00fc.mp4",
+    "path": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\fsv_st_xerjsvl7\\vid\u00e9o test \u00fc.mp4",
     "summary": "1280\u00d7720 \u00b7 25 fps \u00b7 0:02.0 \u00b7 sound: aac",
     "codec": "h264",
     "frames": 50
@@ -61,9 +61,9 @@
       1
     ],
     "pairing_frame": 0,
-    "detect_s": 0.99,
-    "swap_s": 135.23,
-    "total_s": 137.98,
+    "detect_s": 0.96,
+    "swap_s": 152.04,
+    "total_s": 154.82,
     "size": 702736
   },
   "output": {
@@ -105,5 +105,5 @@
       "original_vs_src": -0.013
     }
   ],
-  "finished": "2026-09-28 14:20:28"
+  "finished": "2026-09-28 14:47:32"
 }

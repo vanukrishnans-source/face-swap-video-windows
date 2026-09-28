@@ -28,9 +28,9 @@
     "faces_tracked": true,
     "identity_transferred": true
   },
-  "started": "2026-09-28 14:12:39",
+  "started": "2026-09-28 14:39:03",
   "input": {
-    "path": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\fsv_st_yruosy62\\vid\u00e9o test \u00fc.mp4",
+    "path": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\fsv_st_7iuv1vcc\\vid\u00e9o test \u00fc.mp4",
     "summary": "1280\u00d7720 \u00b7 25 fps \u00b7 0:12.5 \u00b7 sound: aac",
     "codec": "h264",
     "frames": 312
@@ -62,9 +62,9 @@
       1
     ],
     "pairing_frame": 0,
-    "detect_s": 1.8,
-    "swap_s": 319.46,
-    "total_s": 324.75,
+    "detect_s": 1.74,
+    "swap_s": 341.04,
+    "total_s": 344.82,
     "size": 1428523
   },
   "output": {
@@ -107,8 +107,24 @@
     }
   ],
   "directml": {
+    "available_providers": [
+      "DmlExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "note": "Hosted runners have no discrete/iGPU; DML may use WARP or fall back.",
+    "forced_dml_error": "RuntimeError: DirectML provider not used (got ['CPUExecutionProvider'])",
+    "dml_init_s": 1.74,
+    "mode": "auto_after_forced_failed",
+    "device": "CPU (GPU unavailable: RuntimeError: DirectML provider not used (got ['CPUExecutionProvider']))",
+    "per_model": {
+      "arcface_w600k_r50": "CPU",
+      "inswapper_128_fp16": "CPU"
+    },
+    "adapters": "Microsoft Hyper-V Video",
+    "fallback_reason": "RuntimeError: DirectML provider not used (got ['CPUExecutionProvider'])",
+    "active": "CPU",
     "ok": false,
-    "error": "RuntimeError: DirectML provider not used"
+    "error": "RuntimeError: DirectML provider not used (got ['CPUExecutionProvider'])"
   },
-  "finished": "2026-09-28 14:18:07"
+  "finished": "2026-09-28 14:44:55"
 }
