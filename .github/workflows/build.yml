@@ -49,6 +49,8 @@ jobs:
           python -m pip install -U pip wheel
           pip install -r requirements-win.txt
           pip install --no-deps mediapipe==1.0.1
+          # build-time only (lets PyInstaller's collect_all import mediapipe); excluded from the bundle, the app shims it
+          pip install matplotlib
           python -c "import mediapipe, onnxruntime, cv2, PySide6; print(mediapipe.__version__, onnxruntime.__version__, onnxruntime.get_available_providers(), cv2.__version__, PySide6.__version__)"
 
       - name: Download LGPL FFmpeg (BtbN win64 lgpl-shared)
