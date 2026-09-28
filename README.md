@@ -163,17 +163,17 @@ Same inputs as the Android Face Swap Video parity suite (`mixkit_48205` + Light,
 | 48205 0–8 s · 15 fps · 720p · Light | identical `[0,1]@0` | 0 px | 88.9–89.9 dB |
 | 49656 full · 15 fps · 720p · Off | identical `[1,0]@61` | 0 px | 90.3–92.8 dB |
 
-Reports: `reports/parity_*.txt`.
+Reports: `reports/parity_*.txt` (Linux) and `reports/ci/parity/parity_windows.txt` (packaged exe vs reference on windows-latest, PSNR 86.7–88.1 dB, tracking/pairing identical).
 
 ## What runs where
 
 | | This Linux build box | GitHub Actions `windows-latest` | Ally X (target) |
 |---|---|---|---|
 | Pipeline / parity / selftest (CPU) | ✅ verified | ✅ in CI | ✅ |
-| DirectML EP | ❌ (no DML on Linux) | smoke-tested (usually WARP software, no GPU) | ✅ Radeon 780M |
+| DirectML EP | ❌ (no DML on Linux) | EP is in the build; session falls back to CPU on Hyper-V (no GPU / WARP not used) — UI shows “CPU (GPU unavailable: …)” | ✅ Radeon 780M |
 | `h264_amf` hardware encode | ❌ | ❌ | ✅ |
 | Touch UI / XInput | screenshots offscreen | screenshots offscreen | ✅ |
-| Packaged `.exe` | built in CI | ✅ selftest on the exe | ✅ |
+| Packaged `.exe` | built in CI | ✅ selftest + parity + zip release | ✅ |
 
 ## Privacy
 
