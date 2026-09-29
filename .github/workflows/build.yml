@@ -91,7 +91,8 @@ jobs:
           & dist\FaceSwapVideo\FaceSwapVideo_cli.exe --selftest `
             --video clips\mixkit_48205.mp4 --photo testdata\faces_e5.jpg `
             --models "$PWD\.models-cache" --device cpu --enhance gpen256 `
-            --start 1 --length 4 --fps 15 --max-short 720 --out $out --dml-smoke
+            --start 1 --length 4 --fps 15 --max-short 720 --out $out --dml-smoke `
+            --min-confidence 0.62 --same-gender --color-match --temporal-smooth 0.18
           $code = $LASTEXITCODE
           Get-Content "$out\selftest_report.json"
           if ($code -ne 0) { throw "selftest failed: $code" }
@@ -148,7 +149,8 @@ jobs:
           # App side: packaged exe, same settings as the reference (<=720p, x16 dims, 15 fps, sequential decode)
           & dist\FaceSwapVideo\FaceSwapVideo_cli.exe --run clips\mixkit_48205.mp4 testdata\faces_e5.jpg parity\app.mp4 `
             --models "$PWD\.models-cache" --device cpu --enhance gpen256 --start 0 --length 4 --fps 15 `
-            --max-short 720 --align 16 --sequential --dump parity\app_dump
+            --max-short 720 --align 16 --sequential --dump parity\app_dump `
+            --no-color-match --temporal-smooth 0 --no-emb-track --no-same-gender --min-confidence 0.4
           if ($LASTEXITCODE -ne 0) { throw "app run failed" }
           # Reference side: separate venv (ORT 1.30 like the Android parity suite) + GPL ffmpeg only for its libx264 encode
           python -m venv refvenv
@@ -180,6 +182,7 @@ jobs:
           name: FaceSwapVideo-win64-tests
           path: |
             selftest-out/**
+            selftest-out/**/before_after_mid.jpg
             screens-ci/**
             parity/*.txt
             parity/*.json
@@ -206,7 +209,7 @@ jobs:
           $r = Get-Content selftest-out\cli\selftest_report.json -Raw | ConvertFrom-Json
           $dml = if ($r.directml) { ($r.directml | ConvertTo-Json -Compress -Depth 6) } else { "n/a" }
           $lines = @(
-            "Portable build for Windows 10/11 x64 - made for the ASUS ROG Ally X (Radeon 780M, DirectML), works on any DirectX 12 PC with CPU fallback.",
+            "Face Swap Video **2.0 Advanced** — portable Windows 10/11 x64 for the ASUS ROG Ally X (Radeon 780M, DirectML), CPU fallback on any PC.",
             "",
             "| Asset | Size | SHA-256 |",
             "|---|---|---|",
@@ -219,14 +222,27 @@ jobs:
             "",
             "Details, speed estimates and licences: https://github.com/${{ github.repository }}#readme",
             "",
+            "### What's new in 2.0",
+            "- Stricter face detection (confidence + min size) — fewer false swaps of blobs",
+            "- Stable tracking with IoU + ArcFace embedding IDs — less flicker / identity flips",
+            "- Gender estimate + same-gender matching by default",
+            "- Expression follows the video (mouth open/smile) via per-frame landmark warp; source is identity only",
+            "- Skin/body colour match (Reinhard LAB) + soft hairline blend; optional Poisson seamless",
+            "- Temporal EMA smooth to cut flicker without freezing expression",
+            "",
             "### CI (windows-latest, packaged exe)",
             "- Selftest (CPU, Mixkit clip 4 s, Light enhancer): ok=$($r.ok)",
-            "- DirectML smoke: $dml"
+            "- Detection filter / gender: $(($r.checks | ConvertTo-Json -Compress))",
+            "- DirectML smoke: $dml",
+            "",
+            "**SmartScreen:** build is unsigned — More info → Run anyway.",
+            "",
+            "v1.0.0 remains available; this release does not delete it."
           )
           $lines -join "`n" | Out-File -Encoding utf8 notes.md
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag $zip.FullName dist\SHA256SUMS --title "Face Swap Video for Windows $tag" --notes-file notes.md
+            gh release create $tag $zip.FullName dist\SHA256SUMS --title "Face Swap Video 2.0 for Windows $tag" --notes-file notes.md
           } else {
             gh release upload $tag $zip.FullName dist\SHA256SUMS --clobber
             gh release edit $tag --notes-file notes.md

@@ -1,4 +1,4 @@
-# Face Swap Video for Windows
+# Face Swap Video 2.0 for Windows
 
 Native **Windows x64** port of the Android [Face Swap Video](https://github.com/vanukrishnans-source) app, built for the **ASUS ROG Ally X** (Windows 11 handheld: AMD Ryzen Z1 Extreme, Radeon 780M, 24 GB LPDDR5X, 7″ 1920×1080 @ 120 Hz touch + XInput gamepad).
 
@@ -6,7 +6,7 @@ Same pipeline as the phone app: MediaPipe face detection / landmarks → ArcFace
 
 | | Phone app | This Windows app |
 |---|---|---|
-| Package | `com.vanu.faceswapvideo` 1.0 | Face Swap Video 1.0 (portable zip) |
+| Package | `com.vanu.faceswapvideo` 1.0 | Face Swap Video **2.0** (portable zip) |
 | Acceleration | ONNX Runtime CPU (+ optional XNNPACK) | **ONNX Runtime DirectML** on the Radeon 780M, automatic CPU fallback (the UI shows which is in use) |
 | Default resolution | ≤ 720p short side | **≤ 1080p** short side (never upscales) |
 | Default fps | 15 | **30** (or source if lower) |
@@ -30,23 +30,38 @@ The build is **not code-signed** (no certificate available). Windows SmartScreen
 That’s a one-time prompt per machine. The zip’s SHA-256 is published on the release; you can verify with PowerShell:
 
 ```powershell
-Get-FileHash .\FaceSwapVideo-1.0.0-win64.zip -Algorithm SHA256
+Get-FileHash .\FaceSwapVideo-2.0.0-win64.zip -Algorithm SHA256
 ```
 
 ### Install / run
 
 1. Unzip anywhere (e.g. `C:\Games\FaceSwapVideo\`).
 2. Double-click **`FaceSwapVideo.exe`**.
-3. First run downloads **~452 MB** of required models (ArcFace + inswapper). Optional enhancers (both pre-ticked on the setup page, untick to skip): Light ≈ 76 MB, HQ ≈ 284 MB → **812 MB** for everything. Same URLs / SHA-256 as the Android app (FaceFusion GitHub → Hugging Face mirror).
+3. First run downloads **~452 MB** of required models (ArcFace + inswapper_128 fp16). Gender model (~1.3 MB) is **bundled**. Optional enhancers (pre-ticked): Light ≈ 76 MB, HQ ≈ 284 MB → **~812 MB** for everything. Same URLs / SHA-256 as the Android app (FaceFusion GitHub → Hugging Face mirror).
 
 Models stay in `%LOCALAPPDATA%\FaceSwapVideo\models`.
+
+## What's new in 2.0 (vs 1.0)
+
+Fixes the main pain points from v1 on the Ally X:
+
+| Pain (v1) | Fix (v2) |
+|---|---|
+| Face flicker / identity flips | IoU tracking **+ ArcFace embedding IDs**; temporal EMA on output |
+| Poor adaptation to head / mouth motion | **Per-frame landmark warp** — expression (mouth open, smile, blink) comes from the *video* person; source photo is identity only |
+| Wrong gender sometimes | InsightFace **genderage** estimate; **same-gender match** on by default (Flip still overrides) |
+| False positives (blobs / non-faces) | Higher MediaPipe threshold + **geometric confidence** + **min face size**; UI Strict/Default/Loose |
+| Face colour / hairline mismatch | **Reinhard LAB** skin/body colour match + soft forehead/hairline mask; optional Poisson seamless blend |
+
+Still: DirectML on Radeon 780M with CPU fallback, touch-friendly PySide6 UI, unsigned build (SmartScreen → More info → Run anyway). v1.0.0 release is kept.
 
 ## Features
 
 - Open-file dialogs **and drag-and-drop** for the couple video and the faces photo
-- Preview of detected faces in both, left-to-right pairing, **Flip** button
+- Preview of detected faces with **confidence %** and **gender** badges; left-to-right pairing + **Flip**; same-gender default
 - Before / after preview frame before the full job
 - Trim start + length, fps (15 / 24 / 30 / source), resolution cap (480 / 720 / **1080**), enhance Off / Light / HQ / Auto
+- Options: min confidence, same-gender, colour match, temporal smooth, seamless blend
 - Progress with live before/after thumbnails, ETA, Cancel
 - Output H.264 MP4 with original audio; **Open file** / **Open folder** buttons
 - Touch-friendly dark UI for 7″ 1080p @ 150 % scaling; mouse + keyboard; basic XInput D-pad / A / B / Start navigation

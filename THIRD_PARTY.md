@@ -29,3 +29,7 @@ SHA-256 values match the Android Face Swap Video app's `ModelStore` manifest.
 ## Test media
 
 Mixkit stock clips (Mixkit Stock Video Free License) and a CC0 Wikimedia Commons couple photo — see `testdata/SOURCES.md`.
+
+
+## gender_age.onnx (InsightFace)
+Bundled 1.32 MB gender/age estimator. Same InsightFace personal / non-commercial research terms as ArcFace / inswapper.

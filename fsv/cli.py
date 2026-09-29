@@ -129,8 +129,25 @@ def selftest(args):
         photo_path = work / "fotó.jpg"; shutil.copy(args.photo, photo_path)
         photo = load_photo(photo_path)
         report["checks"]["photo_faces"] = len(photo.faces)
+        report["photo_genders"] = list(photo.genders)
+        report["photo_confidences"] = [round(h.confidence, 3) for h in photo.hits]
+        # Prove low-confidence rejects: raise threshold to 0.99 → expect fewer/zero on a normal photo
+        from .detect import DetectOpts, detect_photo, reject_stats
+        loose = reject_stats(photo.img, DetectOpts(min_confidence=0.35, min_face_frac=0.01))
+        strict = reject_stats(photo.img, DetectOpts(min_confidence=0.90, min_face_frac=0.08))
+        report["detection_filter"] = dict(loose=loose, strict=strict,
+                                          default_accepted=len(photo.hits))
+        report["checks"]["low_conf_rejects"] = strict["accepted"] <= loose["accepted"]
+        report["checks"]["gender_labels"] = bool(photo.genders) and all(g in ("male", "female", None) for g in photo.genders)
         st = Settings(start=args.start, length=args.length, fps=args.fps, max_short=args.max_short, enhance=enh,
-                      device=args.device, out_dir=str(out_dir))
+                      device=args.device, out_dir=str(out_dir),
+                      min_confidence=getattr(args, "min_confidence", 0.62),
+                      min_face_frac=getattr(args, "min_face_frac", 0.035),
+                      same_gender=getattr(args, "same_gender", True),
+                      color_match=getattr(args, "color_match", True),
+                      temporal_smooth=getattr(args, "temporal_smooth", 0.18),
+                      seamless=getattr(args, "seamless", False),
+                      emb_track=getattr(args, "emb_track", True))
         job = Job(store, args.device)
         out = out_dir / "selftest_output.mp4"
         res = job.run(info, photo, st, out_path=out, progress=_progress_printer())
@@ -159,6 +176,14 @@ def selftest(args):
         ids = identity_scores(eng, photo, o, i_, d, asg)
         report["identity"] = ids
         c["identity_transferred"] = bool(ids) and all(x["swapped_vs_src"] > x["original_vs_src"] + 0.2 for x in ids)
+        # Before/after sample sheet proving the swap
+        import cv2
+        sheet = np.hstack([i_, np.full((i_.shape[0], 8, 3), 32, np.uint8), o])
+        cv2.imwrite(str(out_dir / "before_after_mid.jpg"), sheet)
+        report["sample_frames"] = dict(before_after=str(out_dir / "before_after_mid.jpg"),
+                                       W=res["W"], H=res["H"],
+                                       color_match=st.color_match, temporal_smooth=st.temporal_smooth,
+                                       same_gender=st.same_gender, src_genders=res.get("src_genders"))
         if args.dml_smoke:
             report["directml"] = dml_smoke(store, i_, d, asg, photo)
         report["ok"] = all(bool(x) for k, x in c.items() if k != "photo_faces") and c["photo_faces"] >= 1
@@ -225,7 +250,14 @@ def run_headless(args):
     store = _models(args.models, need, args.model_cache)
     info = media.probe(args.run[0]); photo = load_photo(args.run[1])
     st = Settings(start=args.start, length=args.length, fps=args.fps, max_short=args.max_short, align=args.align,
-                  enhance=enh, rotation=args.rotation, device=args.device, sequential_decode=args.sequential)
+                  enhance=enh, rotation=args.rotation, device=args.device, sequential_decode=args.sequential,
+                  min_confidence=getattr(args, "min_confidence", 0.62),
+                  min_face_frac=getattr(args, "min_face_frac", 0.035),
+                  same_gender=getattr(args, "same_gender", True),
+                  color_match=getattr(args, "color_match", True),
+                  temporal_smooth=getattr(args, "temporal_smooth", 0.18),
+                  seamless=getattr(args, "seamless", False),
+                  emb_track=getattr(args, "emb_track", True))
     res = Job(store, args.device).run(info, photo, st, out_path=args.run[2], progress=_progress_printer(), dump_dir=args.dump)
     print(json.dumps(res, indent=2, default=str))
     return 0
@@ -287,6 +319,14 @@ def _main(argv=None):
     p.add_argument("--dump", help="parity dump folder (reference layout)")
     p.add_argument("--dml-smoke", action="store_true")
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--min-confidence", type=float, default=0.62)
+    p.add_argument("--min-face-frac", type=float, default=0.035)
+    p.add_argument("--no-same-gender", action="store_false", dest="same_gender")
+    p.add_argument("--no-color-match", action="store_false", dest="color_match")
+    p.add_argument("--temporal-smooth", type=float, default=0.18)
+    p.add_argument("--seamless", action="store_true")
+    p.add_argument("--no-emb-track", action="store_false", dest="emb_track")
+    p.set_defaults(color_match=True, emb_track=True, same_gender=True)
     args, _ = p.parse_known_args(argv)
     headless = args.selftest or args.run or args.bench
     _setup_logging(verbose=bool(headless) and not args.quiet)

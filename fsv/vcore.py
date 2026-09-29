@@ -87,15 +87,36 @@ def match_score(tb, db):
     return 0.1 * (1 - d / r) if d < r else 0.0
 
 
-def track(dets, max_gap):
-    tracks = []; last = []
+def emb_sim(a, b):
+    """Cosine similarity of two L2-ish embeddings; 0 if either missing."""
+    if a is None or b is None: return 0.0
+    a = np.asarray(a, np.float64).ravel(); b = np.asarray(b, np.float64).ravel()
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na < 1e-9 or nb < 1e-9: return 0.0
+    return float(np.dot(a, b) / (na * nb))
+
+
+def track(dets, max_gap, embeddings=None, emb_weight=0.45):
+    """IoU / centre tracking with optional ArcFace embedding affinity (v2).
+
+    embeddings: parallel to dets — list[list[np.ndarray|None]] per frame per detection.
+    Combined score = (1 - emb_weight) * spatial + emb_weight * max(0, cosine).
+    Keeps the same person on the same track ID across frames (cuts identity flips / flicker).
+    """
+    tracks = []; last = []; track_emb = []
     for f, ds in enumerate(dets):
         boxes = [bbox(d) for d in ds]
+        embs = (embeddings[f] if embeddings and f < len(embeddings) else [None] * len(ds))
         act = [t for t in range(len(tracks)) if f - last[t][0] <= max_gap]
         cand = []
         for t in act:
             for j, b in enumerate(boxes):
-                s = match_score(last[t][1], b)
+                spatial = match_score(last[t][1], b)
+                if spatial <= 0 and emb_weight <= 0: continue
+                sim = emb_sim(track_emb[t], embs[j]) if emb_weight > 0 else 0.0
+                # allow a weak spatial miss if embedding is strong (crossing / brief occlusion)
+                if spatial <= 0 and sim < 0.35: continue
+                s = (1.0 - emb_weight) * spatial + emb_weight * max(0.0, sim)
                 if s > 0: cand.append((-s, t, j))
         cand.sort()
         used_t, used_d = set(), set()
@@ -103,21 +124,36 @@ def track(dets, max_gap):
             if t in used_t or j in used_d: continue
             used_t.add(t); used_d.add(j)
             tracks[t][f] = ds[j][:, :2].astype(np.float64); last[t] = (f, boxes[j])
+            if embs[j] is not None:
+                # EMA of track embedding for stable ID
+                te = track_emb[t]
+                track_emb[t] = (0.7 * te + 0.3 * np.asarray(embs[j], np.float64)) if te is not None else np.asarray(embs[j], np.float64)
         for j, d in enumerate(ds):
             if j not in used_d:
                 tracks.append({f: d[:, :2].astype(np.float64)}); last.append((f, boxes[j]))
+                track_emb.append(np.asarray(embs[j], np.float64) if embs[j] is not None else None)
     return tracks
 
 
 # ------------------------------------------------------------------ smoothing
+# Expression-aware One-Euro (v2): keep rigid head motion smoother, but let mouth / eyes
+# follow the video with a higher cutoff so open-mouth / smile / blink are not frozen.
 MIN_CUTOFF = 1.0; BETA = 3.0; D_CUTOFF = 1.0
+EXPR_MIN_CUTOFF = 4.5; EXPR_BETA = 1.2   # lips / eyes: track faster
+# MediaPipe lip + inner-mouth + eye contour indices (within 468)
+_LIPS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 78, 95, 88, 178, 87, 14,
+         317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191, 78, 95,
+         0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61, 185, 40, 39, 37]
+_EYES = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246,
+         263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
+_EXPR_IDX = sorted(set(_LIPS + _EYES))
 
 
 def alpha(cutoff, te):
     tau = 1.0 / (2 * math.pi * cutoff); return 1.0 / (1.0 + tau / te)
 
 
-def one_euro(seq, te):
+def one_euro(seq, te, min_cutoff=MIN_CUTOFF, beta=BETA):
     out = np.empty_like(seq); out[0] = seq[0]; s_hat = 0.0
     ad = alpha(D_CUTOFF, te)
     for i in range(1, len(seq)):
@@ -125,8 +161,19 @@ def one_euro(seq, te):
         w = seq[i][:, 0].max() - seq[i][:, 0].min()
         raw = math.sqrt((c1[0] - c0[0]) ** 2 + (c1[1] - c0[1]) ** 2) / te / max(w, 1.0)
         s_hat = ad * raw + (1 - ad) * s_hat
-        a = alpha(MIN_CUTOFF + BETA * s_hat, te)
+        a = alpha(min_cutoff + beta * s_hat, te)
         out[i] = a * seq[i] + (1 - a) * out[i - 1]
+    return out
+
+
+def one_euro_expression(seq, te):
+    """Smooth rigid structure more; keep lips/eyes responsive so swapped mouth follows the video."""
+    rigid = one_euro(seq, te, MIN_CUTOFF, BETA)
+    expr = one_euro(seq, te, EXPR_MIN_CUTOFF, EXPR_BETA)
+    out = rigid.copy()
+    idx = [i for i in _EXPR_IDX if i < seq.shape[1]]
+    if idx:
+        out[:, idx, :] = expr[:, idx, :]
     return out
 
 
@@ -152,7 +199,7 @@ def smooth_track(tr, fps):
     runs.append(cur)
     for run in runs:
         seq = np.stack([tr[f] for f in run])
-        fw = one_euro(seq, te); bw = one_euro(seq[::-1].copy(), te)[::-1]
+        fw = one_euro_expression(seq, te); bw = one_euro_expression(seq[::-1].copy(), te)[::-1]
         sm = (fw + bw) / 2
         for k, f in enumerate(run): out[f] = sm[k]
     return out
@@ -199,3 +246,46 @@ def pair_single_frame(dets, n_src, rotation):
     for i, k in enumerate(first):
         assign[k] = (i + rotation) % n_src if n_src >= 2 else 0
     return assign
+
+
+def pair_tracks_gender(tracks, n_src, rotation, track_genders=None, src_genders=None, same_gender=True):
+    """Left-to-right pairing with optional same-gender preference (v2).
+
+    Falls back to pair_tracks when gender unknown or same_gender is False. When enabled,
+    assigns each video track the next unused source face of matching gender before filling
+    leftovers left-to-right (Flip/rotation still applies within gender groups).
+    """
+    assign, pf = pair_tracks(tracks, n_src, rotation)
+    if not same_gender or not track_genders or not src_genders or pf < 0:
+        return assign, pf
+    # Rebuild assignment preferring gender match on the pairing frame
+    vis = [k for k in range(len(tracks)) if pf in tracks[k] and assign[k] >= 0]
+    if not vis:
+        return assign, pf
+    vis = sorted(vis, key=lambda k: tracks[k][pf][:, 0].mean())
+    src_order = list(range(n_src))
+    if n_src >= 2:
+        src_order = [(i + rotation) % n_src for i in range(n_src)]
+    used_src = set()
+    new_assign = [-1] * len(tracks)
+    # pass 1: same gender
+    for k in vis:
+        tg = track_genders[k] if k < len(track_genders) else None
+        if not tg: continue
+        for si in src_order:
+            if si in used_src: continue
+            sg = src_genders[si] if si < len(src_genders) else None
+            if sg and sg == tg:
+                new_assign[k] = si; used_src.add(si); break
+    # pass 2: leftovers keep spatial order
+    for k in vis:
+        if new_assign[k] >= 0: continue
+        for si in src_order:
+            if si not in used_src:
+                new_assign[k] = si; used_src.add(si); break
+    # keep secondary tracks that shared an ID with a primary
+    for k in range(len(tracks)):
+        if new_assign[k] < 0 and assign[k] >= 0:
+            # map old source slot through gender remap if possible
+            new_assign[k] = new_assign[vis[0]] if vis else assign[k]
+    return new_assign, pf

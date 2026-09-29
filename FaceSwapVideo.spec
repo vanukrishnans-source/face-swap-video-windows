@@ -10,6 +10,7 @@ root = Path(SPECPATH)
 
 datas = [
     (str(root / "fsv" / "resources" / "face_landmarker.task"), "fsv/resources"),
+    (str(root / "fsv" / "resources" / "gender_age.onnx"), "fsv/resources"),
     (str(root / "packaging" / "icon.ico"), "."),
     (str(root / "THIRD_PARTY.md"), "."),
     (str(root / "LICENSE"), "."),

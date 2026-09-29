@@ -229,31 +229,116 @@ def run_swapper(models, crop, latent):
     return np.clip(y.transpose(1, 2, 0), 0, 1)[:, :, ::-1] * np.float32(255)
 
 
-def swap_face(models, frame, tgt_pts, latent, inplace=False):
+# ---------------------------------------------------------------- colour / hairline blend (v2)
+FOREHEAD_KEEP = 0.55   # how much forehead to keep in the oval (rest blends to body/hair)
+
+
+def reinhard_lab(src_bgr, dst_bgr, mask_f):
+    """Match LAB mean/std of src to dst inside mask (Reinhard). mask_f is float32 0..1."""
+    m = mask_f > 0.35
+    if int(m.sum()) < 40:
+        return src_bgr
+    s = cv2.cvtColor(np.clip(src_bgr, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+    d = cv2.cvtColor(np.clip(dst_bgr, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+    for c in range(3):
+        sm, ss = float(s[..., c][m].mean()), float(s[..., c][m].std()) + 1e-6
+        dm, ds = float(d[..., c][m].mean()), float(d[..., c][m].std()) + 1e-6
+        ratio = float(np.clip(ds / ss, 0.55, 1.85))
+        s[..., c] = (s[..., c] - sm) * ratio + dm
+    return cv2.cvtColor(np.clip(s, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR).astype(np.float32)
+
+
+def hairline_soft_mask(pts, M, size, grow=0.04, feather=0.06):
+    """Hull mask with forehead lowered toward brows so hair colour at the hairline stays from the body."""
+    p = np.asarray(pts, np.float64)
+    oval = p[FACE_OVAL, :2].copy(); n = len(oval)
+    cx = sum(oval[:, 0]) / n; cy = sum(oval[:, 1]) / n
+    ux, uy = p[10, 0] - p[152, 0], p[10, 1] - p[152, 1]
+    fh = np.sqrt(ux * ux + uy * uy) + 1e-6; ux /= fh; uy /= fh
+    # lower forehead part of oval toward brows (index 9 is glabella-ish; 10 is top)
+    top = p[10, :2]; brow = p[9, :2] if p.shape[0] > 9 else p[8, :2]
+    t = (oval[:, 0] - cx) * ux + (oval[:, 1] - cy) * uy
+    tmax = max(abs(v) for v in t) + 1e-6
+    # pull high points (forehead) down toward brow
+    pull = np.maximum(t, 0) / tmax * (1.0 - FOREHEAD_KEEP) * fh * 0.55
+    ox = oval[:, 0] - pull * ux; oy = oval[:, 1] - pull * uy
+    ox = cx + (ox - cx) * (1 + grow); oy = cy + (oy - cy) * (1 + grow)
+    poly = np.stack([M[0, 0] * ox + M[0, 1] * oy + M[0, 2], M[1, 0] * ox + M[1, 1] * oy + M[1, 2]], 1)
+    return gauss_blur(fill_polygon(size, poly), feather * size)
+
+
+def paste_color_matched(frame, crop, mask, M, inplace=False, color_match=True, seamless=False):
+    """Paste with optional Reinhard colour match to the destination ROI (skin/body tone) and soft blend."""
+    h, w = frame.shape[:2]; s = crop.shape[0]
+    x0, y0, x1, y1 = paste_bbox(M, s, w, h)
+    out = frame if inplace else frame.copy()
+    if x1 <= x0 or y1 <= y0:
+        return out
+    A = M.copy()
+    A[0, 2] = M[0, 0] * x0 + M[0, 1] * y0 + M[0, 2]
+    A[1, 2] = M[1, 0] * x0 + M[1, 1] * y0 + M[1, 2]
+    inv = sample_bilinear(crop.astype(np.float32), A, x1 - x0, y1 - y0, True)
+    im = np.clip(sample_bilinear(mask.astype(np.float32), A, x1 - x0, y1 - y0, False), 0, 1)
+    roi = frame[y0:y1, x0:x1].astype(np.float32)
+    if color_match:
+        inv = reinhard_lab(inv, roi, im)
+    if seamless and im.max() > 0.5:
+        try:
+            mu8 = (np.clip(im, 0, 1) * 255).astype(np.uint8)
+            # shrink mask a bit for Poisson stability
+            k = max(3, (min(x1 - x0, y1 - y0) // 30) | 1)
+            mu8 = cv2.erode(mu8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+            if cv2.countNonZero(mu8) >= 50:
+                mx, my, mw, mh = cv2.boundingRect(mu8)
+                center = (mx + mw // 2, my + mh // 2)
+                cloned = cv2.seamlessClone(
+                    np.clip(inv, 0, 255).astype(np.uint8),
+                    np.clip(roi, 0, 255).astype(np.uint8),
+                    mu8.copy(), center, cv2.NORMAL_CLONE)
+                inv = cloned.astype(np.float32)
+        except Exception:  # noqa: BLE001 — fall back to alpha blend
+            pass
+    im3 = im[:, :, None]
+    out[y0:y1, x0:x1] = np.clip(im3 * inv + (np.float32(1) - im3) * roi + np.float32(0.5), 0, 255).astype(np.uint8)
+    return out
+
+
+def swap_face(models, frame, tgt_pts, latent, inplace=False, color_match=True, seamless=False):
+    """Landmark-driven swap: warp target face (expression/pose) every frame, inject source identity.
+
+    Expression/mouth come from the *target video* landmarks (ArcFace-128 aligned crop of the
+    current frame) — the source photo is identity only via the latent, not a frozen texture paste.
+    """
     kps = kps5(tgt_pts)
     crop, M = warp(frame, kps, ARCFACE_128, 128)
     out = run_swapper(models, crop, latent)
-    mask = box_mask(128, 0.3) * hull_mask(tgt_pts, M, 128, 0.04, 0.06)
-    return paste(frame, out, mask, M, inplace)
+    mask = box_mask(128, 0.3) * hairline_soft_mask(tgt_pts, M, 128, 0.04, 0.06)
+    return paste_color_matched(frame, out, mask, M, inplace, color_match=color_match, seamless=seamless)
 
 
-def enhance(models, frame, tgt_pts, restorer='gpen256', blend=0.8, inplace=False):
+def enhance(models, frame, tgt_pts, restorer='gpen256', blend=0.8, inplace=False, color_match=True):
     name, size = RESTORERS[restorer]
     crop, M = warp(frame, kps5(tgt_pts), FFHQ_512, size)
     x = ((crop[:, :, ::-1] / np.float32(255) - np.float32(0.5)) / np.float32(0.5)).transpose(2, 0, 1)[None]
     y = models.run(name, {'input': np.ascontiguousarray(x, np.float32)})[0][0]
     y = ((np.clip(y.transpose(1, 2, 0), -1, 1) + np.float32(1)) / np.float32(2))[:, :, ::-1] * np.float32(255)
     y = crop * np.float32(1 - blend) + y * np.float32(blend)
-    mask = box_mask(size, 0.3) * hull_mask(tgt_pts, M, size, 0.06, 0.05)
-    return paste(frame, y, mask, M, inplace)
+    mask = box_mask(size, 0.3) * hairline_soft_mask(tgt_pts, M, size, 0.06, 0.05)
+    return paste_color_matched(frame, y, mask, M, inplace, color_match=color_match, seamless=False)
 
 
-def process_frame(models, frame, faces, enhance_mode):
-    """faces: list of (pts468 float32, latent). Swap then (optionally) enhance each face in order —
-    identical order to the reference job loop."""
+def process_frame(models, frame, faces, enhance_mode, color_match=True, seamless=False, temporal_ema=0.0, prev_out=None):
+    """faces: list of (pts468 float32, latent). Swap then (optionally) enhance.
+
+    temporal_ema: if >0 and prev_out given, EMA-blend the final frame toward prev_out to cut flicker
+    without freezing expression (landmarks still come from the current frame).
+    """
     out = frame.copy()
     for pts, lat in faces:
-        swap_face(models, out, pts, lat, inplace=True)
+        swap_face(models, out, pts, lat, inplace=True, color_match=color_match, seamless=seamless)
         if enhance_mode:
-            enhance(models, out, pts, enhance_mode, 0.8, inplace=True)
+            enhance(models, out, pts, enhance_mode, 0.8, inplace=True, color_match=color_match)
+    if temporal_ema and prev_out is not None and prev_out.shape == out.shape:
+        a = float(np.clip(temporal_ema, 0.0, 0.45))
+        out = np.clip((1.0 - a) * out.astype(np.float32) + a * prev_out.astype(np.float32), 0, 255).astype(np.uint8)
     return out

@@ -173,7 +173,12 @@ class MainWindow(QMainWindow):
         enh = self.cfg.value("enhance", "auto")
         enh = None if enh in (None, "off", "None", "") else (enh if enh in ("auto", "gpen256", "gpen512") else "auto")
         self.opt = dict(max_short=int(self.cfg.value("max_short", 1080)), fps=float(self.cfg.value("fps", 30.0)),
-                        enhance=enh, out_dir=str(self.cfg.value("out_dir", str(default_out_dir()))))
+                        enhance=enh, out_dir=str(self.cfg.value("out_dir", str(default_out_dir()))),
+                        min_confidence=float(self.cfg.value("min_confidence", 0.62)),
+                        same_gender=self.cfg.value("same_gender", "true") not in (False, "false", "0", 0),
+                        color_match=self.cfg.value("color_match", "true") not in (False, "false", "0", 0),
+                        temporal_smooth=float(self.cfg.value("temporal_smooth", 0.18)),
+                        seamless=self.cfg.value("seamless", "false") in (True, "true", "1", 1))
         root = QWidget(); rl = QVBoxLayout(root); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
         rl.addWidget(self._topbar())
         self.stack = QStackedWidget(); rl.addWidget(self.stack, 1)
@@ -190,7 +195,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ chrome
     def _topbar(self):
         bar = QFrame(); bar.setObjectName("topbar"); lay = QHBoxLayout(bar); lay.setContentsMargins(16, 8, 12, 8)
-        t = label("Face Swap Video", "apptitle"); lay.addWidget(t); lay.addSpacing(12)
+        t = label("Face Swap Video 2.0", "apptitle"); lay.addWidget(t); lay.addSpacing(12)
         self.chip = label("…", "chip"); lay.addWidget(self.chip); lay.addStretch(1)
         self.btn_opts_top = button("⚙  Options"); self.btn_opts_top.clicked.connect(lambda: self.go(PAGE_OPTIONS)); lay.addWidget(self.btn_opts_top)
         about = button("About"); about.clicked.connect(self._about); lay.addWidget(about)
@@ -220,7 +225,7 @@ class MainWindow(QMainWindow):
     def _about(self):
         QMessageBox.about(self, "About Face Swap Video",
             f"<b>Face Swap Video {__version__}</b> for Windows (x64)<br>Desktop port of the Android app by vanu krishnan.<br><br>"
-            "AI models: InsightFace ArcFace w600k_r50 + inswapper_128 (fp16), GPEN-BFR-256/512 — downloaded from the "
+            "AI models: InsightFace ArcFace w600k_r50 + inswapper_128 (fp16), genderage, GPEN-BFR-256/512 — downloaded from the "
             "FaceFusion model releases. <b>InsightFace models are licensed for personal, non-commercial research use only.</b> "
             "Don't use this app to impersonate or deceive anyone; only swap faces of people who agreed to it.<br><br>"
             "Uses ONNX Runtime + DirectML (MIT), MediaPipe (Apache-2.0), OpenCV (Apache-2.0), Qt 6 / PySide6 (LGPLv3), "
@@ -229,7 +234,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ setup
     def _page_setup(self):
         w = QWidget(); outer = QVBoxLayout(w); outer.setContentsMargins(32, 20, 32, 20); outer.setSpacing(12)
-        outer.addWidget(label("One-time setup: download the AI models", "title"))
+        outer.addWidget(label("One-time setup: download the AI models (Face Swap Video 2.0)", "title"))
         outer.addWidget(label("They are downloaded from the FaceFusion model releases on GitHub (Hugging Face mirror as fallback), "
                               "checked with SHA-256 and kept in your user folder. Downloads can be paused and resumed.", "subtitle", True))
         c = card(); g = QGridLayout(c); g.setContentsMargins(16, 12, 16, 12); g.setHorizontalSpacing(16); g.setVerticalSpacing(6)
@@ -391,20 +396,23 @@ class MainWindow(QMainWindow):
         if fr is None: return
         self.thumb = fr
         try:
-            self.vfaces = sorted(detect.detect_frame(fr, 2), key=lambda f: f[:, 0].mean())
+            self.vfaces = sorted(detect.detect_frame(fr, 2, self.settings().detect_opts()), key=lambda f: f[:, 0].mean())
         except Exception:  # noqa: BLE001
             self.vfaces = []
         self._redraw()
 
     def set_photo(self, p):
         try:
-            ph = load_photo(p)
+            ph = load_photo(p, opts=self.settings().detect_opts())
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Photo", str(e)); return
         if not ph.faces:
             QMessageBox.warning(self, "Photo", "No face found in that photo. Use a clear, front-facing photo."); return
         self.photo = ph; self.rotation = 0; self.job.analysis = None
-        self.pslot.info.setText(f"{Path(p).name}\n{len(ph.faces)} face{'s' if len(ph.faces) != 1 else ''} found")
+        genders = ", ".join((g or "?") for g in (ph.genders or []))
+        confs = ", ".join(f"{h.confidence:.0%}" for h in (ph.hits or []))
+        extra = (f" · {genders}" if genders else "") + (f" · conf {confs}" if confs else "")
+        self.pslot.info.setText(f"{Path(p).name}\n{len(ph.faces)} face{'s' if len(ph.faces) != 1 else ''} found{extra}")
         self._redraw()
 
     def _assign(self):
@@ -415,7 +423,15 @@ class MainWindow(QMainWindow):
         letters = "ABCDEF"
         if self.photo:
             n = len(self.photo.faces)
-            self.pslot.set_image(draw_faces(self.photo.img, self.photo.faces, [letters[i] for i in range(n)], [ORANGE] * n))
+            plabels = []
+            for i in range(n):
+                lab = letters[i]
+                if getattr(self.photo, "hits", None) and i < len(self.photo.hits):
+                    h = self.photo.hits[i]
+                    g = (h.gender or "?")[0].upper() if h.gender else "?"
+                    lab = f"{letters[i]} {h.confidence:.0%} {g}"
+                plabels.append(lab)
+            self.pslot.set_image(draw_faces(self.photo.img, self.photo.faces, plabels, [ORANGE] * n))
         if self.thumb is not None:
             asg = self._assign()
             labels = [f"{i + 1}" + (f" ← {letters[a]}" if a >= 0 else "") for i, a in enumerate(asg)]
@@ -457,7 +473,12 @@ class MainWindow(QMainWindow):
         st = self.s_start.value() / 10 if self.info else 0.0
         ln = self.s_len.value() / 10 if self.info else 10.0
         return Settings(start=st, length=ln, fps=self.opt["fps"], max_short=self.opt["max_short"], enhance=enh,
-                        rotation=self.rotation, device=self.job.device, out_dir=self.opt["out_dir"])
+                        rotation=self.rotation, device=self.job.device, out_dir=self.opt["out_dir"],
+                        min_confidence=float(self.opt.get("min_confidence", 0.62)),
+                        same_gender=bool(self.opt.get("same_gender", True)),
+                        color_match=bool(self.opt.get("color_match", True)),
+                        temporal_smooth=float(self.opt.get("temporal_smooth", 0.18)),
+                        seamless=bool(self.opt.get("seamless", False)))
 
     def _update_summary(self):
         st = self.settings()
@@ -557,7 +578,29 @@ class MainWindow(QMainWindow):
         self.seg_dev = Segmented([("Auto (GPU if possible)", "auto"), ("GPU (DirectML)", "dml"), ("CPU only", "cpu")]); lay.addWidget(self.seg_dev)
         self.seg_dev.changed.connect(self._set_device)
         self.dev_info = label("", "hint", True); lay.addWidget(self.dev_info)
+        lay.addWidget(label("Face detection (v2)", "section"))
+        self.seg_conf = Segmented([("Strict 70%", 0.70), ("Default 62%", 0.62), ("Loose 50%", 0.50)])
+        lay.addWidget(self.seg_conf)
+        self.seg_conf.changed.connect(lambda v: self._set_opt("min_confidence", v))
+        self.chk_gender = QCheckBox("Same-gender match (recommended)")
+        self.chk_gender.setChecked(True)
+        self.chk_gender.stateChanged.connect(lambda _=0: self._set_opt("same_gender", self.chk_gender.isChecked()))
+        lay.addWidget(self.chk_gender)
+        self.chk_color = QCheckBox("Match skin / body colour + soft hairline blend")
+        self.chk_color.setChecked(True)
+        self.chk_color.stateChanged.connect(lambda _=0: self._set_opt("color_match", self.chk_color.isChecked()))
+        lay.addWidget(self.chk_color)
+        self.chk_seam = QCheckBox("Seamless (Poisson) blend — slower, stronger hairline")
+        self.chk_seam.stateChanged.connect(lambda _=0: self._set_opt("seamless", self.chk_seam.isChecked()))
+        lay.addWidget(self.chk_seam)
+        lay.addWidget(label("Temporal smooth (cuts flicker; landmarks still follow expression)", "section"))
+        self.seg_smooth = Segmented([("Off", 0.0), ("Light", 0.12), ("Medium", 0.18), ("Strong", 0.30)])
+        lay.addWidget(self.seg_smooth)
+        self.seg_smooth.changed.connect(lambda v: self._set_opt("temporal_smooth", v))
+        lay.addWidget(label("Expression follows the video person every frame (mouth open/smile/blink). "
+                            "Source photo is identity only — not a frozen face paste.", "hint", True))
         lay.addWidget(label("Save to", "section"))
+
         r = QHBoxLayout(); self.out_label = label("", None, True); r.addWidget(self.out_label, 1)
         ch = button("Change…"); ch.clicked.connect(self._change_out); r.addWidget(ch)
         op = button("Open folder"); op.clicked.connect(lambda: self._open_folder(self.opt["out_dir"])); r.addWidget(op)
@@ -572,7 +615,7 @@ class MainWindow(QMainWindow):
         return w
 
     def _set_opt(self, k, v):
-        self.opt[k] = v; self.cfg.setValue(k, v if v is not None else "off"); self.job.analysis = None if k in ("max_short", "fps") else self.job.analysis
+        self.opt[k] = v; self.cfg.setValue(k, v if v is not None else "off"); self.job.analysis = None if k in ("max_short", "fps", "min_confidence", "same_gender") else self.job.analysis
         self._refresh_options()
 
     def _set_device(self, v):
@@ -587,6 +630,17 @@ class MainWindow(QMainWindow):
         if self.opt["enhance"] == "off": self.opt["enhance"] = None
         self.seg_res.set(self.opt["max_short"]); self.seg_fps.set(self.opt["fps"]); self.seg_enh.set(self.opt["enhance"])
         self.seg_dev.set(self.job.device)
+        if hasattr(self, "seg_conf"):
+            # pick nearest preset
+            c = float(self.opt.get("min_confidence", 0.62))
+            best = min(self.seg_conf.buttons.keys(), key=lambda v: abs(v - c))
+            self.seg_conf.set(best)
+            self.chk_gender.setChecked(bool(self.opt.get("same_gender", True)))
+            self.chk_color.setChecked(bool(self.opt.get("color_match", True)))
+            self.chk_seam.setChecked(bool(self.opt.get("seamless", False)))
+            sm = float(self.opt.get("temporal_smooth", 0.18))
+            bests = min(self.seg_smooth.buttons.keys(), key=lambda v: abs(v - sm))
+            self.seg_smooth.set(bests)
         for m, spec in ENHANCE_SPECS.items():
             b = self.seg_enh.buttons[m]; inst = self.store.is_installed(spec)
             b.setText(f"{ENHANCE_LABEL[m]}" + ("" if inst else f"  (download {spec.bytes / 1e6:.0f} MB)"))

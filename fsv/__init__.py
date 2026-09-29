@@ -1,5 +1,5 @@
-"""Face Swap Video for Windows — desktop port of the Android Face Swap Video 1.0 app."""
-__version__ = "1.0.0"
+"""Face Swap Video for Windows — desktop port of the Android Face Swap Video app (v2 Advanced)."""
+__version__ = "2.0.0"
 
 
 def _install_matplotlib_stub():

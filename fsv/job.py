@@ -48,10 +48,22 @@ class Settings:
     device: str = "auto"         # auto | dml | cpu
     out_dir: str = ""
     sequential_decode: bool = False
+    # --- v2 advanced ---
+    min_confidence: float = 0.62
+    min_face_frac: float = 0.035
+    same_gender: bool = True
+    color_match: bool = True
+    seamless: bool = False       # Poisson blend (slower; good hairline)
+    temporal_smooth: float = 0.18  # EMA on output frames 0..0.45
+    emb_track: bool = True       # ArcFace ID affinity in tracker
 
     def effective_fps(self, src_fps):
         f = self.fps if self.fps and self.fps > 0 else min(src_fps, MAX_FPS)
         return min(f, src_fps)
+
+    def detect_opts(self):
+        from .detect import DetectOpts
+        return DetectOpts(min_confidence=self.min_confidence, min_face_frac=self.min_face_frac)
 
 
 @dataclass
@@ -74,6 +86,8 @@ class PhotoFaces:
     path: str
     img: np.ndarray
     faces: list                  # 478-pt arrays, left -> right
+    hits: list = field(default_factory=list)   # FaceHit with confidence/gender
+    genders: list = field(default_factory=list)
 
 
 def default_out_dir() -> Path:
@@ -100,10 +114,18 @@ def cpu_workers():
     return det, work
 
 
-def load_photo(path) -> PhotoFaces:
+def load_photo(path, opts=None, with_gender=True) -> PhotoFaces:
     img = detect.load_image(path)
-    faces = detect.detect_photo(img)
-    return PhotoFaces(str(path), img, faces)
+    hits = detect.detect_photo(img, opts)
+    if with_gender and hits:
+        try:
+            from . import gender as G
+            G.annotate_hits(img, hits)
+        except Exception:  # noqa: BLE001
+            pass
+    faces = [h.pts for h in hits]
+    genders = [h.gender for h in hits]
+    return PhotoFaces(str(path), img, faces, hits=hits, genders=genders)
 
 
 class Job:
@@ -159,18 +181,20 @@ class Job:
         end = min(st.start + min(st.length, MAX_CLIP_S), info.duration)
         W, H, s = vcore.out_size(info.width, info.height, st.max_short, st.align)
         n_src = len(photo.faces)
-        key = (info.path, os.path.getmtime(info.path), round(st.start, 4), round(end, 4), fps, W, H, min(n_src, 2))
+        key = (info.path, os.path.getmtime(info.path), round(st.start, 4), round(end, 4), fps, W, H, min(n_src, 2),
+               round(st.min_confidence, 3), round(st.min_face_frac, 4), st.emb_track, st.same_gender)
         if self.analysis is not None and self.analysis.key == key:
             return self.analysis
         total = max(1, media.count_selected(info, st.start, end, fps))
         n_det, _ = cpu_workers()
         expected = min(n_src, 2)
+        dopts = st.detect_opts()
         t0 = time.perf_counter()
         times, dets = [], []
         inflight = collections.deque()
 
         def det_job(fr):
-            return detect.detect_frame(vcore.prep(fr, W, H, s), expected)
+            return detect.detect_frame(vcore.prep(fr, W, H, s), expected, dopts)
 
         with ThreadPoolExecutor(n_det, thread_name_prefix="detect") as pool:
             for k, t, fr in media.iter_frames(info.path, st.start, end, fps, cancel, st.sequential_decode):
@@ -186,10 +210,43 @@ class Job:
         if cancel and cancel(): raise Cancelled()
         if not dets:
             raise ValueError("No frames in the selected range.")
-        tracks = vcore.track(dets, max_gap=int(round(fps)))
+        embeddings = None
+        if st.emb_track:
+            # Sparse ArcFace IDs every ~0.5 s for track affinity (keeps identity stable)
+            try:
+                eng = self.get_engine(st.device)
+                eng.prepare(None)
+                embeddings = self._sparse_embeddings(eng, info, an_times=times, dets=dets,
+                                                     W=W, H=H, s=s, start=st.start, end=end,
+                                                     fps=fps, seq=st.sequential_decode, cancel=cancel)
+            except Exception as e:  # noqa: BLE001
+                log.warning("embedding track disabled: %s", e); embeddings = None
+        tracks = vcore.track(dets, max_gap=int(round(fps)), embeddings=embeddings,
+                             emb_weight=0.45 if embeddings else 0.0)
         smooth = [vcore.smooth_track(t, fps) for t in tracks]
         self.analysis = Analysis(key, W, H, s, fps, times, dets, tracks, smooth, n_src, time.perf_counter() - t0)
         return self.analysis
+
+    def _sparse_embeddings(self, eng, info, an_times, dets, W, H, s, start, end, fps, seq, cancel):
+        """Compute ArcFace embeddings on a subset of frames; propagate None elsewhere."""
+        n = len(dets)
+        step = max(1, int(round(fps * 0.5)))
+        embs = [[None] * len(dets[i]) for i in range(n)]
+        # Re-read only the needed frames is expensive; reuse decode by sampling indices we already have
+        # We don't keep frames — re-decode sparse subset.
+        want = set(range(0, n, step)) | {n - 1}
+        for k, t, fr in media.iter_frames(info.path, start, end, fps, cancel, seq):
+            if k >= n: break
+            if k not in want: continue
+            frame = vcore.prep(fr, W, H, s)
+            for j, pts in enumerate(dets[k]):
+                try:
+                    embs[k][j] = core.embedding(eng, frame, core.kps5(pts))
+                except Exception:  # noqa: BLE001
+                    embs[k][j] = None
+            if cancel and cancel(): raise Cancelled()
+        # Leave non-sampled frames as None — tracker falls back to IoU there.
+        return embs
 
     @staticmethod
     def _tick(progress, stage, done, total, t0, extra=None):
@@ -210,12 +267,25 @@ class Job:
         fr = media.read_frame_at(info.path, t)
         if fr is None: raise ValueError("Couldn't read that part of the video.")
         frame = vcore.prep(fr, W, H, s)
-        dets = detect.detect_frame(frame, min(len(photo.faces), 2))
+        dets = detect.detect_frame(frame, min(len(photo.faces), 2), st.detect_opts())
         assign = vcore.pair_single_frame(dets, len(photo.faces), st.rotation)
+        if st.same_gender and photo.genders:
+            try:
+                from . import gender as G
+                hits = detect.detect_frame_hits(frame, min(len(photo.faces), 2), st.detect_opts())
+                G.annotate_hits(frame, hits)
+                # rebuild assign with gender preference on this single frame
+                tg = [h.gender for h in hits]
+                # map dets order ≈ hits order
+                if len(tg) == len(dets):
+                    assign = _pair_single_gender(dets, photo.faces, st.rotation, tg, photo.genders, st.same_gender)
+            except Exception:  # noqa: BLE001
+                pass
         lat = self._latents(eng, photo, assign)
         faces = [(dets[i].astype(np.float32), lat[a]) for i, a in enumerate(assign) if a >= 0]
         t0 = time.perf_counter()
-        out = core.process_frame(eng, frame, faces, st.enhance)
+        out = core.process_frame(eng, frame, faces, st.enhance,
+                                 color_match=st.color_match, seamless=st.seamless)
         el = time.perf_counter() - t0
         if faces and self.bench:
             model = self.bench.get("swap", 0) + (self.bench.get(st.enhance, 0) if st.enhance else 0)
@@ -240,6 +310,13 @@ class Job:
         an = self.analyze(info, photo, st, progress, cancel)
         assign, pf = vcore.pair_tracks(an.tracks, an.n_src, st.rotation)
         if pf < 0: raise ValueError("No faces found in the selected part of the video.")
+        if st.same_gender and photo.genders:
+            try:
+                track_genders = self._track_genders(info, an, st, pf)
+                assign, pf = vcore.pair_tracks_gender(
+                    an.tracks, an.n_src, st.rotation, track_genders, photo.genders, True)
+            except Exception as e:  # noqa: BLE001
+                log.warning("gender pairing skipped: %s", e)
         eng = self.get_engine(st.device)
         dev = eng.prepare(st.enhance)
         lat = self._latents(eng, photo, assign)
@@ -263,17 +340,25 @@ class Job:
         def work(k, frame):
             faces = [(an.smooth[ti][k].astype(np.float32), lat[a]) for ti, a in enumerate(assign)
                      if a >= 0 and k in an.smooth[ti]]
-            return core.process_frame(eng, frame, faces, st.enhance)
+            # Landmark-driven swap every frame → mouth/expression follow the video person.
+            return core.process_frame(eng, frame, faces, st.enhance,
+                                      color_match=st.color_match, seamless=st.seamless)
 
         ok = False
         try:
             inflight = collections.deque()
             written = 0
+            prev_out = [None]
 
             def drain_one():
                 nonlocal written
                 k, frame, fut = inflight.popleft()
                 out = fut.result()
+                if st.temporal_smooth and prev_out[0] is not None and prev_out[0].shape == out.shape:
+                    a = float(np.clip(st.temporal_smooth, 0.0, 0.45))
+                    out = np.clip((1.0 - a) * out.astype(np.float32) + a * prev_out[0].astype(np.float32),
+                                  0, 255).astype(np.uint8)
+                prev_out[0] = out
                 enc.write(out)
                 if k in dump_idx:
                     np.save(f"{dump_dir}/frame{k}_in_rgb.npy", frame[:, :, ::-1].copy())
@@ -314,6 +399,9 @@ class Job:
         res = dict(path=str(out_path), frames=n, fps=an.fps, W=an.W, H=an.H, duration=n / an.fps,
                    encoder=enc.encoder, audio=note, device=dev.label(), device_active=dev.active,
                    per_model=dict(dev.per_model), enhance=ENHANCE_LABEL[st.enhance], tracks=len(an.tracks),
+                   min_confidence=st.min_confidence, same_gender=st.same_gender,
+                   color_match=st.color_match, temporal_smooth=st.temporal_smooth,
+                   src_genders=list(photo.genders),
                    track_lengths=[len(t) for t in an.tracks], assign=assign, pairing_frame=pf,
                    detect_s=round(an.detect_s, 2), swap_s=round(swap_s, 2),
                    total_s=round(time.perf_counter() - t_start, 2), size=out_path.stat().st_size)

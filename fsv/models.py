@@ -29,6 +29,11 @@ class ModelSpec:
 
     @property
     def urls(self) -> list[str]:
+        if self.file == "gender_age.onnx":
+            return [
+                "https://huggingface.co/datasets/Alltitude/insightface/resolve/main/genderage.onnx",
+                "https://huggingface.co/uwg/upscaler/resolve/main/Face_Restore/FaceFusion/gender_age.onnx",
+            ]
         return [GH + self.file, HF + self.file]
 
 
@@ -51,7 +56,13 @@ ENHANCER_LIGHT = ModelSpec(
 
 REQUIRED = [ARCFACE, SWAPPER]
 REQUIRED_BYTES = sum(s.bytes for s in REQUIRED)
-OPTIONAL = [ENHANCER_LIGHT, ENHANCER_HQ]
+
+GENDER_AGE = ModelSpec(
+    "gender_age.onnx", "Gender / age estimate", 1_322_532,
+    "4fde69b1c810857b88c64a335084f1c3fe8f01246c9a191b48c7bb756d6652fb",
+)
+
+OPTIONAL = [ENHANCER_LIGHT, ENHANCER_HQ, GENDER_AGE]
 
 
 def default_models_dir() -> Path:
@@ -173,7 +184,7 @@ class ModelStore:
         progress: Optional[Callable[[str, int, int, float, bool], None]],
         cancelled: Optional[Callable[[], bool]],
     ) -> None:
-        headers = {"User-Agent": "FaceSwapVideo-Windows/1.0"}
+        headers = {"User-Agent": "FaceSwapVideo-Windows/2.0"}
         if have > 0:
             headers["Range"] = f"bytes={have}-"
         req = urllib.request.Request(url, headers=headers)
